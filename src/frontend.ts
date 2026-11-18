@@ -236,10 +236,12 @@ export function setup(ctx: SpindleFrontendContext) {
         <div class="pg-body">
           <div class="pg-meta">
             <span class="pg-name">${esc(p.name)}</span>
+            <button class="pg-del" data-del="${esc(p.id)}" title="Delete post" aria-label="Delete post">×</button>
+          </div>
+          <div class="pg-sub2">
             <span class="pg-handle">@${esc(p.handle)}</span>
             <span class="pg-dot">·</span>
             <span class="pg-time" title="${esc(new Date(p.ts).toLocaleString())}">${timeAgo(p.ts)}</span>
-            <button class="pg-del" data-del="${esc(p.id)}" title="Delete post" aria-label="Delete post">×</button>
           </div>
           <div class="pg-text">${richText(p.text)}</div>
         </div>

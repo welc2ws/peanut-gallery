@@ -90,15 +90,16 @@ export const STYLES = `
 .pg-avatar { width: 38px; height: 38px; border-radius: 50%; flex: none; display: grid; place-items: center;
   font-weight: 800; font-size: 13px; }
 .pg-body { flex: 1; min-width: 0; }
-.pg-meta { display: flex; align-items: baseline; gap: 4px; min-width: 0; font-size: 13px; }
-.pg-name { font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
-.pg-handle, .pg-dot, .pg-time { color: var(--lumiverse-text-muted); white-space: nowrap; }
-.pg-handle { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pg-meta { display: flex; align-items: flex-start; gap: 6px; min-width: 0; font-size: 13px; }
+.pg-name { font-weight: 800; overflow-wrap: anywhere; line-height: 1.3; }
+.pg-sub2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; font-size: 12px; line-height: 1.3; }
+.pg-handle, .pg-dot, .pg-time { color: var(--lumiverse-text-muted); }
+.pg-handle { overflow-wrap: anywhere; }
 .pg-del { margin-left: auto; border: none; background: none; cursor: pointer; font-size: 16px; line-height: 1;
   color: var(--lumiverse-text-muted); opacity: 0; transition: opacity .15s; padding: 0 2px; }
 .pg-post:hover .pg-del, .pg-del:focus { opacity: 1; }
 @media (hover: none) { .pg-del { opacity: .5; } }
-.pg-text { margin-top: 2px; line-height: 1.45; overflow-wrap: anywhere; }
+.pg-text { margin-top: 4px; line-height: 1.45; overflow-wrap: anywhere; }
 .pg-tag { color: var(--pg-peanut); font-weight: 600; }
 
 .pg-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 28px 12px; text-align: center; color: var(--lumiverse-text-muted); }
