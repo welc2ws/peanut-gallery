@@ -1,0 +1,16 @@
+{
+  "name": "peanut-gallery",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build:backend": "bun build src/backend.ts --outfile dist/backend.js --target bun",
+    "build:frontend": "bun build src/frontend.ts --outfile dist/frontend.js --target browser",
+    "build": "bun run typecheck && bun run build:backend && bun run build:frontend"
+  },
+  "devDependencies": {
+    "lumiverse-spindle-types": "0.6.80",
+    "typescript": "^5.5.0"
+  }
+}
