@@ -1,12 +1,18 @@
 {
-  "version": "0.1.0",
+  "version": "0.1.1",
   "name": "Peanut Gallery",
   "identifier": "peanut_gallery",
   "author": "welc2ws",
   "github": "https://github.com/welc2ws/peanut-gallery",
   "homepage": "https://github.com/welc2ws/peanut-gallery",
   "description": "A sidebar fan feed where the herd reacts to your roleplay. One feed per chat, one fandom per character.",
-  "permissions": ["generation", "characters", "chats", "personas"],
+  "permissions": [
+    "generation",
+    "characters",
+    "chats",
+    "chat_mutation",
+    "personas"
+  ],
   "entry_backend": "dist/backend.js",
   "entry_frontend": "dist/frontend.js"
 }

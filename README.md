@@ -20,7 +20,7 @@ In Lumiverse: **Sidebar → Extensions → install from GitHub**, then paste:
 https://github.com/welc2ws/peanut-gallery
 ```
 
-The repo has to be public for Lumiverse to download it. Grant the permissions it asks for (generation, characters, chats, personas).
+The repo has to be public for Lumiverse to download it. Grant the permissions it asks for (generation, characters, chats, chat_mutation, personas). Lumiverse needs chat_mutation to let extensions read chat messages; Peanut Gallery never edits your chats..
 
 ## Development
 
