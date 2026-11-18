@@ -5,7 +5,11 @@ A Lumiverse extension that adds a fake social media feed to your sidebar. A crow
 ## Features
 
 - **A feed for every chat.** Each chat keeps its own posts.
-- **Fandoms.** Every character is a fandom with its own name, notes (ships, in-jokes, recurring fans) and settings. Switch fandoms and chats from the top of the tab, or let it follow whatever chat you have open.
+- **Fandoms.** Every character is a fandom with its own name, notes (ships, in-jokes, recurring fans) and settings.
+- **Shared galleries.** Merge several characters into one gallery so they share a fandom, like a whole series with one fanbase.
+- **Compact switcher.** One searchable picker for galleries and chats, or let it follow whatever chat you have open.
+- **Storage manager.** See every saved feed and how much space it uses, clear or delete feeds, and clean up feeds left behind by deleted chats.
+- **Cost per refresh.** The Fandom tab shows roughly how many tokens each refresh sends.
 - **You choose what fans know, per fandom:**
   - *Recent messages*: fans react live to the last few messages.
   - *Whole story*: fans get a running recap of the whole chat plus the latest scene. The recap updates itself and you can edit it.

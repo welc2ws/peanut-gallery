@@ -90,17 +90,52 @@ function parsePosts(raw) {
 
 // src/backend.ts
 var SETTINGS_PATH = "settings.json";
+var GROUPS_PATH = "galleries.json";
 var fandomPath = (characterId) => `fandoms/${characterId}.json`;
 var feedPath = (chatId) => `feeds/${chatId}.json`;
 async function loadSettings(userId) {
   const saved = await spindle.userStorage.getJson(SETTINGS_PATH, { fallback: {}, userId });
   return { ...DEFAULT_SETTINGS, ...saved };
 }
-async function loadFandom(characterId, userId) {
+async function loadGroups(userId) {
+  const saved = await spindle.userStorage.getJson(GROUPS_PATH, { fallback: {}, userId });
+  return Array.isArray(saved.groups) ? saved.groups : [];
+}
+async function saveGroups(groups, userId) {
+  await spindle.userStorage.setJson(GROUPS_PATH, { groups }, { userId });
+}
+function normalizeFandom(f, fallbackName) {
+  return {
+    name: String(f.name || "").slice(0, 60) || fallbackName,
+    contextMode: f.contextMode === "summary" ? "summary" : "recent",
+    recentCount: Math.min(60, Math.max(1, Math.round(Number(f.recentCount) || 10))),
+    notes: String(f.notes || "").slice(0, 4000)
+  };
+}
+async function resolveGallery(characterId, userId) {
+  const groups = await loadGroups(userId);
+  const group = groups.find((g) => g.characterIds.includes(characterId));
+  if (group) {
+    const base = defaultFandom(group.name);
+    return { ref: `grp:${group.id}`, fandom: { ...base, ...group.fandom }, name: group.name };
+  }
   const character = await spindle.characters.get(characterId, userId).catch(() => null);
   const base = defaultFandom(character?.name || "Story");
   const saved = await spindle.userStorage.getJson(fandomPath(characterId), { fallback: {}, userId });
-  return { ...base, ...saved };
+  return { ref: `char:${characterId}`, fandom: { ...base, ...saved }, name: character?.name || "Unknown" };
+}
+async function loadFandomByRef(ref, userId) {
+  const [kind, id] = splitRef(ref);
+  if (kind === "grp") {
+    const group = (await loadGroups(userId)).find((g) => g.id === id);
+    return group ? { ...defaultFandom(group.name), ...group.fandom } : defaultFandom("Story");
+  }
+  return (await resolveGallery(id, userId)).fandom;
+}
+function splitRef(ref) {
+  const i = String(ref).indexOf(":");
+  const kind = ref.slice(0, i) === "grp" ? "grp" : "char";
+  return [kind, ref.slice(i + 1)];
 }
 async function loadFeed(chatId, userId) {
   const saved = await spindle.userStorage.getJson(feedPath(chatId), { fallback: {}, userId });
@@ -189,6 +224,60 @@ Rewrite the story so far to include the new events. Keep it to what an audience 
     feed.summarizedUpTo += slice.length;
   }
 }
+async function buildPrompt(chatId, userId, opts) {
+  const settings = await loadSettings(userId);
+  const chat = await spindle.chats.get(chatId, userId);
+  if (!chat)
+    throw new Error("That chat no longer exists.");
+  const character = await spindle.characters.get(chat.character_id, userId);
+  const persona = await spindle.personas.getActive(userId).catch(() => null);
+  const { ref, fandom } = await resolveGallery(chat.character_id, userId);
+  const feed = await loadFeed(chatId, userId);
+  const charName = character?.name || "Character";
+  const userName = persona?.name || "User";
+  const messages = await getStoryMessages(chatId);
+  if (!messages.length)
+    throw new Error("This chat has no messages for the fans to react to yet.");
+  let context = "";
+  let pendingSummaryMessages = 0;
+  if (fandom.contextMode === "summary") {
+    if (opts.updateSummary)
+      await updateSummary(chatId, feed, userId, settings);
+    else
+      pendingSummaryMessages = Math.max(0, messages.length - SUMMARY_KEEP_RAW - feed.summarizedUpTo);
+    const latest = messages.slice(-SUMMARY_KEEP_RAW);
+    context = `STORY SO FAR:
+${feed.summary || "(just getting started)"}
+
+LATEST SCENE:
+${formatMessages(latest, charName, userName)}`;
+  } else {
+    const latest = messages.slice(-Math.max(1, fandom.recentCount));
+    context = `LATEST SCENES:
+${formatMessages(latest, charName, userName)}`;
+  }
+  const vars = { char: charName, user: userName, fandom: fandom.name, tone: settings.tone, count: String(settings.postCount) };
+  const system = `${fillMacros(settings.systemPrompt, vars)}
+
+${FORMAT_RULES}`;
+  const recentPosts = feed.posts.slice(0, 12).reverse();
+  const parts = [
+    `ABOUT ${charName.toUpperCase()}:
+${clean(character?.description || "", 1200) || "(no description)"}`,
+    persona?.description ? `ABOUT ${userName.toUpperCase()}:
+${clean(persona.description, 600)}` : "",
+    fandom.notes.trim() ? `FANDOM NOTES (in-jokes, ships, recurring fans):
+${fandom.notes.trim()}` : "",
+    context,
+    recentPosts.length ? `POSTS ALREADY ON THE FEED (don't repeat these; fans can reply to or continue them):
+${recentPosts.map((p) => `${p.name} | @${p.handle}: ${p.text}`).join(`
+`)}` : "",
+    `Write ${settings.postCount} new posts from the ${fandom.name} fandom reacting to the latest events.`
+  ].filter(Boolean);
+  return { system, user: parts.join(`
+
+`), characterId: chat.character_id, ref, fandom, feed, pendingSummaryMessages };
+}
 async function generateFeed(chatId, userId) {
   if (generating.has(chatId))
     return;
@@ -196,53 +285,8 @@ async function generateFeed(chatId, userId) {
   send(userId, { type: "generating", chatId, on: true });
   try {
     const settings = await loadSettings(userId);
-    const chat = await spindle.chats.get(chatId, userId);
-    if (!chat)
-      throw new Error("That chat no longer exists.");
-    const character = await spindle.characters.get(chat.character_id, userId);
-    const persona = await spindle.personas.getActive(userId).catch(() => null);
-    const fandom = await loadFandom(chat.character_id, userId);
-    const feed = await loadFeed(chatId, userId);
-    const charName = character?.name || "Character";
-    const userName = persona?.name || "User";
-    const messages = await getStoryMessages(chatId);
-    if (!messages.length)
-      throw new Error("This chat has no messages for the fans to react to yet.");
-    let context = "";
-    if (fandom.contextMode === "summary") {
-      await updateSummary(chatId, feed, userId, settings);
-      const latest = messages.slice(-SUMMARY_KEEP_RAW);
-      context = `STORY SO FAR:
-${feed.summary || "(just getting started)"}
-
-LATEST SCENE:
-${formatMessages(latest, charName, userName)}`;
-    } else {
-      const latest = messages.slice(-Math.max(1, fandom.recentCount));
-      context = `LATEST SCENES:
-${formatMessages(latest, charName, userName)}`;
-    }
-    const vars = { char: charName, user: userName, fandom: fandom.name, tone: settings.tone, count: String(settings.postCount) };
-    const system = `${fillMacros(settings.systemPrompt, vars)}
-
-${FORMAT_RULES}`;
-    const recentPosts = feed.posts.slice(0, 12).reverse();
-    const parts = [
-      `ABOUT ${charName.toUpperCase()}:
-${clean(character?.description || "", 1200) || "(no description)"}`,
-      persona?.description ? `ABOUT ${userName.toUpperCase()}:
-${clean(persona.description, 600)}` : "",
-      fandom.notes.trim() ? `FANDOM NOTES (in-jokes, ships, recurring fans):
-${fandom.notes.trim()}` : "",
-      context,
-      recentPosts.length ? `POSTS ALREADY ON THE FEED (don't repeat these; fans can reply to or continue them):
-${recentPosts.map((p) => `${p.name} | @${p.handle}: ${p.text}`).join(`
-`)}` : "",
-      `Write ${settings.postCount} new posts from the ${fandom.name} fandom reacting to the latest events.`
-    ].filter(Boolean);
-    const raw = await llm(userId, settings, system, parts.join(`
-
-`), settings.temperature);
+    const built = await buildPrompt(chatId, userId, { updateSummary: true });
+    const raw = await llm(userId, settings, built.system, built.user, settings.temperature);
     const parsed = parsePosts(raw);
     if (!parsed.length) {
       spindle.log.warn(`Peanut Gallery: could not parse posts from: ${raw.slice(0, 400)}`);
@@ -259,11 +303,11 @@ ${recentPosts.map((p) => `${p.name} | @${p.handle}: ${p.text}`).join(`
       batch
     }));
     const latestFeed = await loadFeed(chatId, userId);
-    latestFeed.summary = feed.summary;
-    latestFeed.summarizedUpTo = feed.summarizedUpTo;
+    latestFeed.summary = built.feed.summary;
+    latestFeed.summarizedUpTo = built.feed.summarizedUpTo;
     latestFeed.posts = [...newPosts, ...latestFeed.posts].slice(0, Math.max(10, settings.keepPosts));
     await saveFeed(chatId, latestFeed, userId);
-    send(userId, { type: "feed_data", chatId, characterId: chat.character_id, feed: latestFeed, fandom, newCount: newPosts.length });
+    send(userId, { type: "feed_data", chatId, characterId: built.characterId, ref: built.ref, feed: latestFeed, fandom: built.fandom, newCount: newPosts.length });
   } catch (err) {
     const message = err?.message || String(err);
     spindle.log.error(`Peanut Gallery: generation failed - ${message}`);
@@ -273,49 +317,203 @@ ${recentPosts.map((p) => `${p.name} | @${p.handle}: ${p.text}`).join(`
     send(userId, { type: "generating", chatId, on: false });
   }
 }
-async function listFandoms(userId) {
+async function countTokens(chatId, userId) {
+  try {
+    const settings = await loadSettings(userId);
+    const built = await buildPrompt(chatId, userId, { updateSummary: false });
+    const messages = [
+      { role: "system", content: built.system },
+      { role: "user", content: built.user }
+    ];
+    let total = 0;
+    let approximate = true;
+    let model = "";
+    try {
+      const conn = settings.connectionId ? await spindle.connections.get(settings.connectionId, userId) : null;
+      const result = await spindle.tokens.countMessages(messages, conn?.model ? { model: conn.model } : undefined);
+      total = result.total_tokens;
+      approximate = result.approximate;
+      model = result.model;
+    } catch {
+      total = Math.ceil((built.system.length + built.user.length) / 4);
+    }
+    send(userId, {
+      type: "token_count",
+      chatId,
+      total,
+      approximate,
+      model,
+      replyEstimate: settings.postCount * 60,
+      pendingSummaryMessages: built.pendingSummaryMessages,
+      contextMode: built.fandom.contextMode
+    });
+  } catch (err) {
+    send(userId, { type: "token_count", chatId, error: err?.message || String(err) });
+  }
+}
+async function listCharacters(userId) {
   const { data } = await spindle.characters.list({ limit: 500, userId });
   return data.map((c) => ({ id: c.id, name: c.name, avatar: c.avatar_url || null })).sort((a, b) => a.name.localeCompare(b.name));
 }
-async function listChats(characterId, userId) {
-  const { data } = await spindle.chats.list({ characterId, limit: 200, userId });
-  return data.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0)).map((c) => ({ id: c.id, name: c.name || "Untitled chat", updated: c.updated_at }));
+async function listGalleries(userId, characters) {
+  const chars = characters || await listCharacters(userId);
+  const byId = new Map(chars.map((c) => [c.id, c]));
+  const groups = await loadGroups(userId);
+  const grouped = new Set(groups.flatMap((g) => g.characterIds));
+  const out = groups.map((g) => ({
+    ref: `grp:${g.id}`,
+    kind: "group",
+    name: g.name,
+    characterIds: g.characterIds.filter((id) => byId.has(id)),
+    avatar: byId.get(g.characterIds.find((id) => byId.has(id)) || "")?.avatar || null
+  }));
+  for (const c of chars) {
+    if (!grouped.has(c.id))
+      out.push({ ref: `char:${c.id}`, kind: "solo", name: c.name, characterIds: [c.id], avatar: c.avatar });
+  }
+  return out;
+}
+async function listChatsForRef(ref, userId) {
+  const [kind, id] = splitRef(ref);
+  const characterIds = kind === "grp" ? (await loadGroups(userId)).find((g) => g.id === id)?.characterIds || [] : [id];
+  const results = [];
+  for (const characterId of characterIds) {
+    const character = await spindle.characters.get(characterId, userId).catch(() => null);
+    if (!character)
+      continue;
+    const { data } = await spindle.chats.list({ characterId, limit: 200, userId });
+    for (const c of data) {
+      results.push({ id: c.id, name: c.name || "Untitled chat", characterId, characterName: character.name, updated: c.updated_at });
+    }
+  }
+  return results.sort((a, b) => (b.updated || 0) - (a.updated || 0));
 }
 async function sendFeed(chatId, userId) {
   const chat = await spindle.chats.get(chatId, userId);
   if (!chat)
     return send(userId, { type: "error", chatId, message: "That chat no longer exists." });
-  const [feed, fandom] = await Promise.all([loadFeed(chatId, userId), loadFandom(chat.character_id, userId)]);
-  send(userId, { type: "feed_data", chatId, characterId: chat.character_id, feed, fandom, generating: generating.has(chatId) });
+  const [feed, gallery] = await Promise.all([loadFeed(chatId, userId), resolveGallery(chat.character_id, userId)]);
+  send(userId, { type: "feed_data", chatId, characterId: chat.character_id, ref: gallery.ref, feed, fandom: gallery.fandom, generating: generating.has(chatId) });
+}
+async function sendGalleries(userId) {
+  const characters = await listCharacters(userId);
+  const galleries = await listGalleries(userId, characters);
+  send(userId, { type: "galleries_data", galleries, characters });
+}
+function feedIdFromPath(path) {
+  const m = String(path).match(/(?:^|\/)([^/]+)\.json$/);
+  return m ? m[1] : null;
+}
+async function listStoredFeeds(userId) {
+  const paths = await spindle.userStorage.list("feeds/", userId).catch(() => []);
+  const groups = await loadGroups(userId);
+  const charCache = new Map;
+  const out = [];
+  for (const path of paths) {
+    const chatId = feedIdFromPath(path);
+    if (!chatId)
+      continue;
+    const full = feedPath(chatId);
+    const [stat, feed, chat] = await Promise.all([
+      spindle.userStorage.stat(full, userId).catch(() => null),
+      loadFeed(chatId, userId).catch(() => emptyFeed()),
+      spindle.chats.get(chatId, userId).catch(() => null)
+    ]);
+    let characterName = null;
+    let galleryName = null;
+    if (chat) {
+      if (!charCache.has(chat.character_id)) {
+        const c = await spindle.characters.get(chat.character_id, userId).catch(() => null);
+        charCache.set(chat.character_id, c?.name || null);
+      }
+      characterName = charCache.get(chat.character_id) || null;
+      galleryName = groups.find((g) => g.characterIds.includes(chat.character_id))?.name || characterName;
+    }
+    out.push({
+      chatId,
+      chatName: chat ? chat.name || "Untitled chat" : null,
+      characterName,
+      galleryName,
+      posts: feed.posts.length,
+      bytes: stat?.sizeBytes || 0,
+      modified: stat?.modifiedAt ? Date.parse(stat.modifiedAt) || 0 : 0
+    });
+  }
+  return out.sort((a, b) => b.bytes - a.bytes);
+}
+async function sendStorage(userId) {
+  const feeds = await listStoredFeeds(userId);
+  send(userId, { type: "storage_data", feeds });
+}
+async function deleteFeedFile(chatId, userId) {
+  await spindle.userStorage.delete(feedPath(chatId), userId).catch(() => {});
+}
+async function cleanupOrphans(userId) {
+  const feeds = await listStoredFeeds(userId);
+  let removed = 0;
+  for (const f of feeds) {
+    if (f.chatName === null) {
+      await deleteFeedFile(f.chatId, userId);
+      removed++;
+    }
+  }
+  const fandomFiles = await spindle.userStorage.list("fandoms/", userId).catch(() => []);
+  for (const path of fandomFiles) {
+    const id = feedIdFromPath(path);
+    if (!id)
+      continue;
+    const c = await spindle.characters.get(id, userId).catch(() => null);
+    if (!c) {
+      await spindle.userStorage.delete(fandomPath(id), userId).catch(() => {});
+      removed++;
+    }
+  }
+  const groups = await loadGroups(userId);
+  const chars = new Set((await listCharacters(userId)).map((c) => c.id));
+  let changed = false;
+  for (const g of groups) {
+    const kept = g.characterIds.filter((id) => chars.has(id));
+    if (kept.length !== g.characterIds.length) {
+      g.characterIds = kept;
+      changed = true;
+    }
+  }
+  if (changed)
+    await saveGroups(groups, userId);
+  spindle.toast.success(removed ? `Cleaned up ${removed} leftover file${removed === 1 ? "" : "s"}.` : "Nothing to clean up.");
 }
 async function handle(payload, userId) {
   switch (payload?.type) {
     case "init": {
-      const [settings, connections, fandoms, active] = await Promise.all([
+      const [settings, connections, characters, active] = await Promise.all([
         loadSettings(userId),
         spindle.connections.list(userId).catch(() => []),
-        listFandoms(userId),
+        listCharacters(userId),
         spindle.chats.getActive(userId).catch(() => null)
       ]);
+      const galleries = await listGalleries(userId, characters);
       send(userId, {
         type: "init_data",
         settings,
         connections: connections.map((c) => ({ id: c.id, name: c.name || c.id, provider: c.provider, isDefault: c.is_default })),
-        fandoms,
+        galleries,
+        characters,
         active: active ? { chatId: active.id, characterId: active.character_id } : null
       });
       return;
     }
     case "list_chats": {
-      const chats = await listChats(payload.characterId, userId);
-      const fandom = await loadFandom(payload.characterId, userId);
-      send(userId, { type: "chats_data", characterId: payload.characterId, chats, fandom });
+      const chats = await listChatsForRef(payload.ref, userId);
+      const fandom = await loadFandomByRef(payload.ref, userId);
+      send(userId, { type: "chats_data", ref: payload.ref, chats, fandom, forPicker: !!payload.forPicker });
       return;
     }
     case "load_feed":
       return sendFeed(payload.chatId, userId);
     case "generate":
       return generateFeed(payload.chatId, userId);
+    case "count_tokens":
+      return countTokens(payload.chatId, userId);
     case "save_settings": {
       const merged = { ...DEFAULT_SETTINGS, ...payload.settings || {} };
       merged.postCount = Math.min(30, Math.max(1, Math.round(Number(merged.postCount) || 6)));
@@ -328,17 +526,55 @@ async function handle(payload, userId) {
       return;
     }
     case "save_fandom": {
-      const f = payload.fandom || {};
-      const fandom = {
-        name: String(f.name || "").slice(0, 60) || defaultFandom("Story").name,
-        contextMode: f.contextMode === "summary" ? "summary" : "recent",
-        recentCount: Math.min(60, Math.max(1, Math.round(Number(f.recentCount) || 10))),
-        notes: String(f.notes || "").slice(0, 4000)
-      };
-      await spindle.userStorage.setJson(fandomPath(payload.characterId), fandom, { userId });
-      send(userId, { type: "fandom_saved", characterId: payload.characterId, fandom });
+      const [kind, id] = splitRef(payload.ref);
+      if (kind === "grp") {
+        const groups = await loadGroups(userId);
+        const group = groups.find((g) => g.id === id);
+        if (!group)
+          throw new Error("That gallery no longer exists.");
+        group.fandom = normalizeFandom(payload.fandom || {}, defaultFandom(group.name).name);
+        await saveGroups(groups, userId);
+        send(userId, { type: "fandom_saved", ref: payload.ref, fandom: group.fandom });
+      } else {
+        const fandom = normalizeFandom(payload.fandom || {}, defaultFandom("Story").name);
+        await spindle.userStorage.setJson(fandomPath(id), fandom, { userId });
+        send(userId, { type: "fandom_saved", ref: payload.ref, fandom });
+      }
       spindle.toast.success("Fandom saved.");
       return;
+    }
+    case "save_group": {
+      const input = payload.group || {};
+      const name = String(input.name || "").trim().slice(0, 60);
+      const members = Array.from(new Set((input.characterIds || []).map(String)));
+      if (!name)
+        throw new Error("Give the gallery a name.");
+      if (members.length < 2)
+        throw new Error("Pick at least two characters to share a gallery.");
+      const groups = await loadGroups(userId);
+      let group = input.id ? groups.find((g) => g.id === input.id) : undefined;
+      if (!group) {
+        const first = await resolveGallery(members[0], userId);
+        group = { id: uid(), name, characterIds: [], fandom: { ...first.fandom, name: defaultFandom(name).name } };
+        groups.push(group);
+      }
+      group.name = name;
+      group.characterIds = members;
+      for (const g of groups)
+        if (g !== group)
+          g.characterIds = g.characterIds.filter((id) => !members.includes(id));
+      const kept = groups.filter((g) => g === group || g.characterIds.length > 0);
+      await saveGroups(kept, userId);
+      spindle.toast.success(`Saved gallery "${name}".`);
+      send(userId, { type: "group_saved", ref: `grp:${group.id}` });
+      return sendGalleries(userId);
+    }
+    case "delete_group": {
+      const groups = await loadGroups(userId);
+      await saveGroups(groups.filter((g) => g.id !== payload.id), userId);
+      spindle.toast.success("Gallery split back into separate characters.");
+      send(userId, { type: "group_deleted", ref: `grp:${payload.id}` });
+      return sendGalleries(userId);
     }
     case "save_summary": {
       const feed = await loadFeed(payload.chatId, userId);
@@ -377,7 +613,33 @@ async function handle(payload, userId) {
       feed.posts = [];
       await saveFeed(payload.chatId, feed, userId);
       spindle.toast.success("Feed cleared.");
-      return sendFeed(payload.chatId, userId);
+      await sendFeed(payload.chatId, userId);
+      if (payload.fromStorage)
+        await sendStorage(userId);
+      return;
+    }
+    case "list_storage":
+      return sendStorage(userId);
+    case "delete_feed": {
+      await deleteFeedFile(payload.chatId, userId);
+      spindle.toast.success("Feed deleted.");
+      send(userId, { type: "feed_deleted", chatId: payload.chatId });
+      return sendStorage(userId);
+    }
+    case "cleanup_orphans":
+      await cleanupOrphans(userId);
+      await sendStorage(userId);
+      return sendGalleries(userId);
+    case "delete_all_feeds": {
+      const paths = await spindle.userStorage.list("feeds/", userId).catch(() => []);
+      for (const p of paths) {
+        const id = feedIdFromPath(p);
+        if (id)
+          await deleteFeedFile(id, userId);
+      }
+      spindle.toast.success("All feeds deleted.");
+      send(userId, { type: "feed_deleted", chatId: "*" });
+      return sendStorage(userId);
     }
   }
 }

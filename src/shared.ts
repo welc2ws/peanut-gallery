@@ -28,6 +28,49 @@ export interface Fandom {
   notes: string
 }
 
+/**
+ * A gallery is who shares a fandom. Every character has a solo gallery ("char:<id>")
+ * unless it has been merged into a group gallery ("grp:<id>") with other characters.
+ */
+export interface Group {
+  id: string
+  name: string
+  characterIds: string[]
+  fandom: Fandom
+}
+
+export interface GalleryInfo {
+  ref: string
+  kind: 'solo' | 'group'
+  name: string
+  characterIds: string[]
+  avatar: string | null
+}
+
+export interface CharacterInfo {
+  id: string
+  name: string
+  avatar: string | null
+}
+
+export interface ChatInfo {
+  id: string
+  name: string
+  characterId: string
+  characterName: string
+  updated: number
+}
+
+export interface StoredFeedInfo {
+  chatId: string
+  chatName: string | null
+  characterName: string | null
+  galleryName: string | null
+  posts: number
+  bytes: number
+  modified: number
+}
+
 export interface Settings {
   connectionId: string
   systemPrompt: string
